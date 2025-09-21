@@ -1,5 +1,5 @@
 # translit_service.py
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import cv2
@@ -18,14 +18,20 @@ from gtts import gTTS
 
 app = FastAPI()
 
-# Allow all origins for demo; lock down in production
+# ✅ CORS setup: allow POST + OPTIONS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # For demo; replace with your frontend domain in prod
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],  # includes POST, GET, OPTIONS
     allow_headers=["*"],
 )
+
+# Explicit preflight handler (avoids 405 on OPTIONS)
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    return JSONResponse({"message": "CORS preflight OK"})
+
 
 # mapping frontend -> indic-transliteration
 target_map = {
@@ -63,12 +69,10 @@ def pil_from_bytes(bts: bytes) -> Image.Image:
 
 def cv_from_pil(pil: Image.Image):
     arr = np.array(pil)
-    # PIL uses RGB, OpenCV uses BGR
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 def crop_image_cv(img_cv: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
     h_img, w_img = img_cv.shape[:2]
-    # ensure bounds
     x = max(0, int(round(x)))
     y = max(0, int(round(y)))
     w = max(1, int(round(w)))
@@ -78,22 +82,20 @@ def crop_image_cv(img_cv: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndar
     return img_cv[y:y2, x:x2]
 
 def preprocess_for_ocr(img: np.ndarray) -> np.ndarray:
-    """Preprocessing pipeline to improve OCR."""
     try:
-        # resize if very large
         h, w = img.shape[:2]
         max_dim = 1600
         if max(h, w) > max_dim:
             scale = max_dim / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.bilateralFilter(gray, 9, 75, 75)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         gray = clahe.apply(gray)
-        th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY, 11, 2)
-        # convert back to BGR for consistency
+        th = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
+        )
         processed = cv2.cvtColor(th, cv2.COLOR_GRAY2BGR)
         processed = deskew(processed)
         return processed
@@ -118,8 +120,7 @@ def deskew(image: np.ndarray) -> np.ndarray:
                                  flags=cv2.INTER_CUBIC,
                                  borderMode=cv2.BORDER_REPLICATE)
         return rotated
-    except Exception as e:
-        # fallback
+    except Exception:
         return image
 
 def detect_script_from_text(text: str) -> str:
@@ -140,6 +141,7 @@ def detect_script_from_text(text: str) -> str:
             break
     return sanscript.DEVANAGARI
 
+
 # --- Endpoints ---
 
 @app.post("/process-image")
@@ -151,23 +153,16 @@ async def process_image(
     height: float = Form(None),
     target: str = Form("english"),
 ):
-    """
-    Accepts a full image + crop coordinates (x,y,width,height in pixels relative to full image),
-    or if coordinates omitted, uses full image.
-    Returns OCR text + transliterations.
-    """
     try:
         contents = await image.read()
         pil = pil_from_bytes(contents)
         img_cv = cv_from_pil(pil)
 
-        # If coordinates provided, crop server-side
         if x is not None and y is not None and width is not None and height is not None:
             img_cv = crop_image_cv(img_cv, x, y, width, height)
 
         processed = preprocess_for_ocr(img_cv)
 
-        # Tesseract configuration: include multiple indic languages (ensure tesseract lang packs installed)
         config = r'--oem 3 --psm 6'
         langs = "eng+hin+tel+tam+kan+mal+ben+guj+pan+ori"
         text = pytesseract.image_to_string(processed, lang=langs, config=config).strip()
@@ -188,9 +183,9 @@ async def process_image(
             "transliterated_user": transliterated_user,
             "transliterated_english": transliterated_english,
         }
-
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 @app.post("/transliterate-text")
 async def transliterate_text(body: dict):
@@ -214,6 +209,7 @@ async def transliterate_text(body: dict):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
 @app.post("/speak")
 async def speak(body: dict):
     try:
@@ -235,8 +231,7 @@ async def speak(body: dict):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# Run with:
-# uvicorn translit_service:app --host 0.0.0.0 --port 8000
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
