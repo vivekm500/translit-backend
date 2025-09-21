@@ -1,0 +1,9 @@
+fastapi==0.116.2
+uvicorn==0.30.6
+pillow
+pytesseract
+opencv-python
+indic-transliteration==2.3.75
+gTTS==2.5.3
+python-multipart
+

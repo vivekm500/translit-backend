@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+ENV/
+.Python
+
+# local env files
+.env
+*.env
+
+# temp folders
+tmp/
+tmp_*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# bytecode
+*.egg-info/
+dist/
+build/
